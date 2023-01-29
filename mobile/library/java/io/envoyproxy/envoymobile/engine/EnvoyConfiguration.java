@@ -34,6 +34,7 @@ public class EnvoyConfiguration {
   public final Integer dnsQueryTimeoutSeconds;
   public final Integer dnsMinRefreshSeconds;
   public final String dnsPreresolveHostnames;
+  public final Boolean enableDNSCache;
   public final Boolean enableDrainPostDnsRefresh;
   public final Boolean enableHttp3;
   public final Boolean enableGzip;
@@ -43,7 +44,6 @@ public class EnvoyConfiguration {
   public final Boolean enableInterfaceBinding;
   public final Integer h2ConnectionKeepaliveIdleIntervalMilliseconds;
   public final Integer h2ConnectionKeepaliveTimeoutSeconds;
-  public final Boolean h2ExtendKeepaliveTimeout;
   public final Integer maxConnectionsPerHost;
   public final List<EnvoyHTTPFilterFactory> httpPlatformFilterFactories;
   public final Integer statsFlushSeconds;
@@ -82,6 +82,7 @@ public class EnvoyConfiguration {
    *     refresh DNS.
    * @param dnsPreresolveHostnames                        hostnames to preresolve on Envoy Client
    *     construction.
+   * @param enableDNSCache                                whether to enable DNS cache.
    * @param enableDrainPostDnsRefresh                     whether to drain connections after soft
    *     DNS refresh.
    * @param enableHttp3                                   whether to enable experimental support for
@@ -97,9 +98,6 @@ public class EnvoyConfiguration {
    * @param h2ConnectionKeepaliveIdleIntervalMilliseconds rate in milliseconds seconds to send h2
    *                                                      pings on stream creation.
    * @param h2ConnectionKeepaliveTimeoutSeconds           rate in seconds to timeout h2 pings.
-   * @param h2ExtendKeepaliveTimeout                      Extend the keepalive timeout when *any*
-   *                                                      frame is received
-   *                                                      on the owning HTTP/2 connection.
    * @param maxConnectionsPerHost                         maximum number of connections to open to a
    *                                                      single host.
    * @param statsFlushSeconds                             interval at which to flush Envoy stats.
@@ -123,10 +121,10 @@ public class EnvoyConfiguration {
       boolean adminInterfaceEnabled, String grpcStatsDomain, int connectTimeoutSeconds,
       int dnsRefreshSeconds, int dnsFailureRefreshSecondsBase, int dnsFailureRefreshSecondsMax,
       int dnsQueryTimeoutSeconds, int dnsMinRefreshSeconds, String dnsPreresolveHostnames,
-      boolean enableDrainPostDnsRefresh, boolean enableHttp3, boolean enableGzip,
-      boolean enableBrotli, boolean enableSocketTagging, boolean enableHappyEyeballs,
-      boolean enableInterfaceBinding, int h2ConnectionKeepaliveIdleIntervalMilliseconds,
-      int h2ConnectionKeepaliveTimeoutSeconds, boolean h2ExtendKeepaliveTimeout,
+      boolean enableDNSCache, boolean enableDrainPostDnsRefresh, boolean enableHttp3,
+      boolean enableGzip, boolean enableBrotli, boolean enableSocketTagging,
+      boolean enableHappyEyeballs, boolean enableInterfaceBinding,
+      int h2ConnectionKeepaliveIdleIntervalMilliseconds, int h2ConnectionKeepaliveTimeoutSeconds,
       int maxConnectionsPerHost, int statsFlushSeconds, int streamIdleTimeoutSeconds,
       int perTryIdleTimeoutSeconds, String appVersion, String appId,
       TrustChainVerification trustChainVerification, String virtualClusters,
@@ -144,6 +142,7 @@ public class EnvoyConfiguration {
     this.dnsQueryTimeoutSeconds = dnsQueryTimeoutSeconds;
     this.dnsMinRefreshSeconds = dnsMinRefreshSeconds;
     this.dnsPreresolveHostnames = dnsPreresolveHostnames;
+    this.enableDNSCache = enableDNSCache;
     this.enableDrainPostDnsRefresh = enableDrainPostDnsRefresh;
     this.enableHttp3 = enableHttp3;
     this.enableGzip = enableGzip;
@@ -154,7 +153,6 @@ public class EnvoyConfiguration {
     this.h2ConnectionKeepaliveIdleIntervalMilliseconds =
         h2ConnectionKeepaliveIdleIntervalMilliseconds;
     this.h2ConnectionKeepaliveTimeoutSeconds = h2ConnectionKeepaliveTimeoutSeconds;
-    this.h2ExtendKeepaliveTimeout = h2ExtendKeepaliveTimeout;
     this.maxConnectionsPerHost = maxConnectionsPerHost;
     this.statsFlushSeconds = statsFlushSeconds;
     this.streamIdleTimeoutSeconds = streamIdleTimeoutSeconds;
@@ -180,6 +178,11 @@ public class EnvoyConfiguration {
    * @param platformFilterTemplate helper template to build platform http filters.
    * @param nativeFilterTemplate helper template to build native http filters.
    * @param altProtocolCacheFilterInsert helper insert to include the alt protocol cache filter.
+   * @param gzipFilterInsert helper to include to enable gzip compression.
+   * @param brotliFilterInsert helper to include to enable brotli compression.
+   * @param socketTagFilterInsert helper to include to enable socket tagging.
+   * @param persistentDNSCacheConfigInsert helper to include to enable DNS cache.
+   * @param certValidationTemplate helper template to enable cert validation.
    * @return String, the resolved template.
    * @throws ConfigurationException, when the template provided is not fully
    *                                 resolved.
@@ -188,6 +191,7 @@ public class EnvoyConfiguration {
                          final String nativeFilterTemplate,
                          final String altProtocolCacheFilterInsert, final String gzipFilterInsert,
                          final String brotliFilterInsert, final String socketTagFilterInsert,
+                         final String persistentDNSCacheConfigInsert,
                          final String certValidationTemplate) {
     final StringBuilder customFiltersBuilder = new StringBuilder();
 
@@ -230,10 +234,6 @@ public class EnvoyConfiguration {
         .append(String.format("- &dns_preresolve_hostnames %s\n", dnsPreresolveHostnames))
         .append(String.format("- &dns_lookup_family %s\n",
                               enableHappyEyeballs ? "ALL" : "V4_PREFERRED"))
-        .append(
-            String.format("- &dns_multiple_addresses %s\n", enableHappyEyeballs ? "true" : "false"))
-        .append(String.format("- &h2_delay_keepalive_timeout %s\n",
-                              h2ExtendKeepaliveTimeout ? "true" : "false"))
         .append(String.format("- &dns_refresh_rate %ss\n", dnsRefreshSeconds))
         .append(String.format("- &enable_drain_post_dns_refresh %s\n",
                               enableDrainPostDnsRefresh ? "true" : "false"))
@@ -255,6 +255,11 @@ public class EnvoyConfiguration {
         .append("- &virtual_clusters ")
         .append(virtualClusters)
         .append("\n");
+
+    if (enableDNSCache) {
+      configBuilder.append(
+          String.format("- &persistent_dns_cache_config %s\n", persistentDNSCacheConfigInsert));
+    }
 
     configBuilder.append(String.format("- &stats_flush_interval %ss\n", statsFlushSeconds));
 

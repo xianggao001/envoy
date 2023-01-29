@@ -23,9 +23,11 @@ open class EngineBuilder: NSObject {
   private var dnsMinRefreshSeconds: UInt32 = 60
   private var dnsPreresolveHostnames: String = "[]"
   private var dnsRefreshSeconds: UInt32 = 60
+  private var enableDNSCache: Bool = false
   private var enableHappyEyeballs: Bool = true
   private var enableGzip: Bool = true
   private var enableBrotli: Bool = false
+  private var enableHttp3: Bool = true
   private var enableInterfaceBinding: Bool = false
   private var enforceTrustChainVerification: Bool = true
   private var enablePlatformCertificateValidation: Bool = false
@@ -33,7 +35,6 @@ open class EngineBuilder: NSObject {
   private var forceIPv6: Bool = false
   private var h2ConnectionKeepaliveIdleIntervalMilliseconds: UInt32 = 1
   private var h2ConnectionKeepaliveTimeoutSeconds: UInt32 = 10
-  private var h2ExtendKeepaliveTimeout: Bool = false
   private var maxConnectionsPerHost: UInt32 = 7
   private var statsFlushSeconds: UInt32 = 60
   private var streamIdleTimeoutSeconds: UInt32 = 15
@@ -173,6 +174,20 @@ open class EngineBuilder: NSObject {
     return self
   }
 
+  /// Specify whether to enable DNS cache.
+  ///
+  /// Note that DNS cache requires an addition of a key value store named
+  /// 'reserved.platform_store'.
+  ///
+  /// - parameter enableDNSCache: whether to enable DNS cache. Disabled by default.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func enableDNSCache(_ enableDNSCache: Bool) -> Self {
+    self.enableDNSCache = enableDNSCache
+    return self
+  }
+
   /// Specify whether to use Happy Eyeballs when multiple IP stacks may be supported. Defaults to
   /// true.
   ///
@@ -204,6 +219,17 @@ open class EngineBuilder: NSObject {
   @discardableResult
   public func enableBrotli(_ enableBrotli: Bool) -> Self {
     self.enableBrotli = enableBrotli
+    return self
+  }
+
+  /// Specify whether to enable support for HTTP/3 or not.  Defaults to true.
+  ///
+  /// - parameter enableHttp3: whether or not to enable HTTP/3.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func enableHttp3(_ enableHttp3: Bool) -> Self {
+    self.enableHttp3 = enableHttp3
     return self
   }
 
@@ -293,17 +319,6 @@ open class EngineBuilder: NSObject {
   public func addH2ConnectionKeepaliveTimeoutSeconds(
     _ h2ConnectionKeepaliveTimeoutSeconds: UInt32) -> Self {
     self.h2ConnectionKeepaliveTimeoutSeconds = h2ConnectionKeepaliveTimeoutSeconds
-    return self
-  }
-
-  /// Extend the keepalive timeout when *any* frame is received on the owning HTTP/2 connection.
-  ///
-  /// - parameter h2ExtendKeepaliveTimeout: whether to extend the keepalive timeout.
-  ///
-  /// - returns: This builder.
-  @discardableResult
-  public func h2ExtendKeepaliveTimeout(_ h2ExtendKeepaliveTimeout: Bool) -> Self {
-    self.h2ExtendKeepaliveTimeout = h2ExtendKeepaliveTimeout
     return self
   }
 
@@ -530,7 +545,9 @@ open class EngineBuilder: NSObject {
       dnsQueryTimeoutSeconds: self.dnsQueryTimeoutSeconds,
       dnsMinRefreshSeconds: self.dnsMinRefreshSeconds,
       dnsPreresolveHostnames: self.dnsPreresolveHostnames,
+      enableDNSCache: self.enableDNSCache,
       enableHappyEyeballs: self.enableHappyEyeballs,
+      enableHttp3: self.enableHttp3,
       enableGzip: self.enableGzip,
       enableBrotli: self.enableBrotli,
       enableInterfaceBinding: self.enableInterfaceBinding,
@@ -541,7 +558,6 @@ open class EngineBuilder: NSObject {
       h2ConnectionKeepaliveIdleIntervalMilliseconds:
         self.h2ConnectionKeepaliveIdleIntervalMilliseconds,
       h2ConnectionKeepaliveTimeoutSeconds: self.h2ConnectionKeepaliveTimeoutSeconds,
-      h2ExtendKeepaliveTimeout: self.h2ExtendKeepaliveTimeout,
       maxConnectionsPerHost: self.maxConnectionsPerHost,
       statsFlushSeconds: self.statsFlushSeconds,
       streamIdleTimeoutSeconds: self.streamIdleTimeoutSeconds,

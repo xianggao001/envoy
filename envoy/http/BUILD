@@ -46,6 +46,7 @@ envoy_cc_library(
         ":metadata_interface",
         ":protocol_interface",
         ":stream_reset_handler_interface",
+        "//envoy/access_log:access_log_interface",
         "//envoy/buffer:buffer_interface",
         "//envoy/grpc:status",
         "//envoy/network:address_interface",
@@ -240,8 +241,7 @@ envoy_cc_library(
         "//envoy/config:typed_config_interface",
         "//envoy/http:header_map_interface",
         "//envoy/http:protocol_interface",
-        "//envoy/server:factory_context_interface",
-        "//envoy/stream_info:stream_info_interface",
+        "//envoy/protobuf:message_validator_interface",
     ],
 )
 

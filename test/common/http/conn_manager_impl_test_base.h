@@ -152,9 +152,8 @@ public:
   const HttpConnectionManagerProto::ProxyStatusConfig* proxyStatusConfig() const override {
     return proxy_status_config_.get();
   }
-  HeaderValidatorPtr makeHeaderValidator(Protocol protocol,
-                                         StreamInfo::StreamInfo& stream_info) override {
-    return header_validator_factory_.create(protocol, stream_info, header_validator_stats_);
+  HeaderValidatorPtr makeHeaderValidator(Protocol protocol) override {
+    return header_validator_factory_.create(protocol, header_validator_stats_);
   }
   bool appendXForwardedPort() const override { return false; }
 
@@ -177,6 +176,7 @@ public:
       callbacks.addAccessLogHandler(handler);
     };
   }
+  void expectUhvTrailerCheckFail();
 
   Envoy::Event::SimulatedTimeSystem test_time_;
   NiceMock<Router::MockRouteConfigProvider> route_config_provider_;
@@ -220,8 +220,8 @@ public:
   NiceMock<Server::Configuration::MockFactoryContext> factory_context_;
   RequestDecoder* decoder_{};
   std::shared_ptr<Ssl::MockConnectionInfo> ssl_connection_;
-  std::shared_ptr<NiceMock<Tracing::MockHttpTracer>> tracer_{
-      std::make_shared<NiceMock<Tracing::MockHttpTracer>>()};
+  std::shared_ptr<NiceMock<Tracing::MockTracer>> tracer_{
+      std::make_shared<NiceMock<Tracing::MockTracer>>()};
   TracingConnectionManagerConfigPtr tracing_config_;
   SlowDateProviderImpl date_provider_{test_time_.timeSystem()};
   NiceMock<MockStream> stream_;

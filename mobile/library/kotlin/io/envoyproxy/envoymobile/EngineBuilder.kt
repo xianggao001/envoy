@@ -51,8 +51,9 @@ open class EngineBuilder(
   private var dnsQueryTimeoutSeconds = 25
   private var dnsMinRefreshSeconds = 60
   private var dnsPreresolveHostnames = "[]"
+  private var enableDNSCache = false
   private var enableDrainPostDnsRefresh = false
-  private var enableHttp3 = false
+  private var enableHttp3 = true
   private var enableHappyEyeballs = true
   private var enableGzip = true
   private var enableBrotli = false
@@ -60,7 +61,6 @@ open class EngineBuilder(
   private var enableInterfaceBinding = false
   private var h2ConnectionKeepaliveIdleIntervalMilliseconds = 1
   private var h2ConnectionKeepaliveTimeoutSeconds = 10
-  private var h2ExtendKeepaliveTimeout = false
   private var maxConnectionsPerHost = 7
   private var statsFlushSeconds = 60
   private var streamIdleTimeoutSeconds = 15
@@ -209,6 +209,21 @@ open class EngineBuilder(
   }
 
   /**
+   * Specify whether to enable DNS cache.
+   *
+   * Note that DNS cache requires an addition of a key value store named
+   * 'reserved.platform_store'.
+   *
+   * @param enableDNSCache whether to enable DNS cache. Disabled by default.
+   *
+   * @return This builder.
+   */
+  fun enableDNSCache(enableDNSCache: Boolean): EngineBuilder {
+    this.enableDNSCache = enableDNSCache
+    return this
+  }
+
+  /**
    * Specify whether to enable experimental HTTP/3 (QUIC) support. Note the actual protocol will
    * be negotiated with the upstream endpoint and so upstream support is still required for HTTP/3
    * to be utilized.
@@ -342,18 +357,6 @@ open class EngineBuilder(
    */
   fun addH2ConnectionKeepaliveTimeoutSeconds(timeoutSeconds: Int): EngineBuilder {
     this.h2ConnectionKeepaliveTimeoutSeconds = timeoutSeconds
-    return this
-  }
-
-  /**
-   * Extend the keepalive timeout when *any* frame is received on the owning HTTP/2 connection.
-   *
-   * @param h2ExtendKeepaliveTimeout whether to extend the keepalive timeout.
-   *
-   * @return This builder.
-   */
-  fun h2ExtendKeepaliveTimeout(h2ExtendKeepaliveTimeout: Boolean): EngineBuilder {
-    this.h2ExtendKeepaliveTimeout = h2ExtendKeepaliveTimeout
     return this
   }
 
@@ -587,6 +590,7 @@ open class EngineBuilder(
       dnsQueryTimeoutSeconds,
       dnsMinRefreshSeconds,
       dnsPreresolveHostnames,
+      enableDNSCache,
       enableDrainPostDnsRefresh,
       enableHttp3,
       enableGzip,
@@ -596,7 +600,6 @@ open class EngineBuilder(
       enableInterfaceBinding,
       h2ConnectionKeepaliveIdleIntervalMilliseconds,
       h2ConnectionKeepaliveTimeoutSeconds,
-      h2ExtendKeepaliveTimeout,
       maxConnectionsPerHost,
       statsFlushSeconds,
       streamIdleTimeoutSeconds,

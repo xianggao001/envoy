@@ -21,7 +21,7 @@
 #include "quiche/quic/test_tools/quic_session_peer.h"
 #endif
 
-#include "source/server/connection_handler_impl.h"
+#include "source/extensions/listener_managers/listener_manager/connection_handler_impl.h"
 
 #include "test/test_common/network_utility.h"
 #include "test/test_common/utility.h"
@@ -44,7 +44,7 @@ FakeStream::FakeStream(FakeHttpConnection& parent, Http::ResponseEncoder& encode
   encoder.getStream().addCallbacks(*this);
 }
 
-void FakeStream::decodeHeaders(Http::RequestHeaderMapPtr&& headers, bool end_stream) {
+void FakeStream::decodeHeaders(Http::RequestHeaderMapSharedPtr&& headers, bool end_stream) {
   absl::MutexLock lock(&lock_);
   headers_ = std::move(headers);
   setEndStream(end_stream);

@@ -301,7 +301,9 @@ void StreamEncoderImpl::endEncode() {
   if (connect_request_ || is_tcp_tunneling_ ||
       (is_response_to_connect_request_ &&
        Runtime::runtimeFeatureEnabled("envoy.reloadable_features.no_delay_close_for_upgrades"))) {
-    connection_.connection().close(Network::ConnectionCloseType::FlushWrite);
+    connection_.connection().close(
+        Network::ConnectionCloseType::FlushWrite,
+        StreamInfo::LocalCloseReasons::get().CloseForConnectRequestOrTcpTunneling);
   }
 }
 
@@ -693,6 +695,7 @@ Envoy::StatusOr<size_t> ConnectionImpl::dispatchSlice(const char* slice, size_t 
     if (Runtime::runtimeFeatureEnabled("envoy.reloadable_features.http1_use_balsa_parser")) {
       if (parser_->errorMessage() == "headers size exceeds limit" ||
           parser_->errorMessage() == "trailers size exceeds limit") {
+        error_code_ = Http::Code::RequestHeaderFieldsTooLarge;
         error = Http1ResponseCodeDetails::get().HeadersTooLarge;
       } else if (parser_->errorMessage() == "header value contains invalid chars") {
         error = Http1ResponseCodeDetails::get().InvalidCharacters;
