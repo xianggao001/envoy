@@ -88,6 +88,7 @@ void ProxyFilter::initializeReadFilterCallbacks(Network::ReadFilterCallbacks& ca
                                                config_->stats_.downstream_cx_tx_bytes_total_,
                                                config_->stats_.downstream_cx_tx_bytes_buffered_,
                                                nullptr, nullptr});
+  splitter_.setReadFilterCallback(callbacks_);
 }
 
 void ProxyFilter::onRespValue(Common::Redis::RespValuePtr&& value) {
@@ -209,10 +210,11 @@ void ProxyFilter::onResponse(PendingRequest& request, Common::Redis::RespValuePt
 }
 
 Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data, bool) {
-  try {
+  TRY_NEEDS_AUDIT {
     decoder_->decode(data);
     return Network::FilterStatus::Continue;
-  } catch (Common::Redis::ProtocolError&) {
+  }
+  END_TRY catch (Common::Redis::ProtocolError&) {
     config_->stats_.downstream_cx_protocol_error_.inc();
     Common::Redis::RespValue error;
     error.type(Common::Redis::RespType::Error);

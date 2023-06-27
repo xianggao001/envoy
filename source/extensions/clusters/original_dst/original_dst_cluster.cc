@@ -24,8 +24,13 @@ namespace Upstream {
 
 HostConstSharedPtr OriginalDstCluster::LoadBalancer::chooseHost(LoadBalancerContext* context) {
   if (context) {
-    // Check if filter state override is present, if yes use it before headers and local address.
+    // Check if filter state override is present, if yes use it before anything else.
     Network::Address::InstanceConstSharedPtr dst_host = filterStateOverrideHost(context);
+
+    // Check if override host metadata is present, if yes use it otherwise check the header.
+    if (dst_host == nullptr) {
+      dst_host = metadataOverrideHost(context);
+    }
 
     // Check if override host header is present, if yes use it otherwise check local address.
     if (dst_host == nullptr) {
@@ -90,17 +95,21 @@ HostConstSharedPtr OriginalDstCluster::LoadBalancer::chooseHost(LoadBalancerCont
 
 Network::Address::InstanceConstSharedPtr
 OriginalDstCluster::LoadBalancer::filterStateOverrideHost(LoadBalancerContext* context) {
-  const auto* conn = context->downstreamConnection();
-  if (!conn) {
-    return nullptr;
+  const auto streamInfos = {
+      context->requestStreamInfo(),
+      context->downstreamConnection() ? &context->downstreamConnection()->streamInfo() : nullptr};
+  for (const auto streamInfo : streamInfos) {
+    if (streamInfo == nullptr) {
+      continue;
+    }
+    const auto* dst_address =
+        streamInfo->filterState().getDataReadOnly<Network::DestinationAddress>(
+            Network::DestinationAddress::key());
+    if (dst_address) {
+      return dst_address->address();
+    }
   }
-  const auto* dst_address =
-      conn->streamInfo().filterState().getDataReadOnly<Network::DestinationAddress>(
-          Network::DestinationAddress::key());
-  if (!dst_address) {
-    return nullptr;
-  }
-  return dst_address->address();
+  return nullptr;
 }
 
 Network::Address::InstanceConstSharedPtr
@@ -131,14 +140,52 @@ OriginalDstCluster::LoadBalancer::requestOverrideHost(LoadBalancerContext* conte
   return request_host;
 }
 
-OriginalDstCluster::OriginalDstCluster(
-    Server::Configuration::ServerFactoryContext& server_context,
-    const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
-    Server::Configuration::TransportSocketFactoryContextImpl& factory_context,
-    Stats::ScopeSharedPtr&& stats_scope, bool added_via_api)
-    : ClusterImplBase(server_context, config, runtime, factory_context, std::move(stats_scope),
-                      added_via_api, factory_context.mainThreadDispatcher().timeSource()),
-      dispatcher_(factory_context.mainThreadDispatcher()),
+Network::Address::InstanceConstSharedPtr
+OriginalDstCluster::LoadBalancer::metadataOverrideHost(LoadBalancerContext* context) {
+  if (!metadata_key_.has_value()) {
+    return nullptr;
+  }
+  const auto streamInfos = {
+      context->requestStreamInfo(),
+      context->downstreamConnection() ? &context->downstreamConnection()->streamInfo() : nullptr};
+  const ProtobufWkt::Value* value = nullptr;
+  for (const auto streamInfo : streamInfos) {
+    if (streamInfo == nullptr) {
+      continue;
+    }
+    const auto& metadata = streamInfo->dynamicMetadata();
+    value = &Config::Metadata::metadataValue(&metadata, metadata_key_.value());
+    // Path can refer to a list, in which case we extract the first element.
+    if (value->kind_case() == ProtobufWkt::Value::kListValue) {
+      const auto& values = value->list_value().values();
+      if (!values.empty()) {
+        value = &(values[0]);
+      }
+    }
+    if (value->kind_case() == ProtobufWkt::Value::kStringValue) {
+      break;
+    }
+  }
+  if (value == nullptr || value->kind_case() != ProtobufWkt::Value::kStringValue) {
+    return nullptr;
+  }
+  const std::string& metadata_override_host = value->string_value();
+  Network::Address::InstanceConstSharedPtr metadata_host =
+      Network::Utility::parseInternetAddressAndPortNoThrow(metadata_override_host, false);
+  if (metadata_host == nullptr) {
+    ENVOY_LOG(debug, "original_dst_load_balancer: invalid override metadata value. {}",
+              metadata_override_host);
+    parent_->info()->trafficStats()->original_dst_host_invalid_.inc();
+    return nullptr;
+  }
+  ENVOY_LOG(debug, "Using metadata override host {}.", metadata_override_host);
+  return metadata_host;
+}
+
+OriginalDstCluster::OriginalDstCluster(const envoy::config::cluster::v3::Cluster& config,
+                                       ClusterFactoryContext& context)
+    : ClusterImplBase(config, context),
+      dispatcher_(context.serverFactoryContext().mainThreadDispatcher()),
       cleanup_interval_ms_(
           std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(config, cleanup_interval, 5000))),
       cleanup_timer_(dispatcher_.createTimer([this]() -> void { cleanup(); })),
@@ -155,6 +202,9 @@ OriginalDstCluster::OriginalDstCluster(
             "false. Set use_http_header to true if http_header_name is desired.",
             config_opt->http_header_name()));
       }
+    }
+    if (config_opt->has_metadata_key()) {
+      metadata_key_ = Config::MetadataKey(config_opt->metadata_key());
     }
     if (config_opt->has_upstream_port_override()) {
       port_override_ = config_opt->upstream_port_override().value();
@@ -192,7 +242,7 @@ void OriginalDstCluster::addHost(HostSharedPtr& host) {
   all_hosts->emplace_back(host);
   priority_set_.updateHosts(0,
                             HostSetImpl::partitionHosts(all_hosts, HostsPerLocalityImpl::empty()),
-                            {}, {std::move(host)}, {}, absl::nullopt);
+                            {}, {std::move(host)}, {}, absl::nullopt, absl::nullopt);
 }
 
 void OriginalDstCluster::cleanup() {
@@ -263,18 +313,15 @@ void OriginalDstCluster::cleanup() {
     setHostMap(new_host_map);
     priority_set_.updateHosts(
         0, HostSetImpl::partitionHosts(keeping_hosts, HostsPerLocalityImpl::empty()), {}, {},
-        to_be_removed, absl::nullopt);
+        to_be_removed, false, absl::nullopt);
   }
 
   cleanup_timer_->enableTimer(cleanup_interval_ms_);
 }
 
 std::pair<ClusterImplBaseSharedPtr, ThreadAwareLoadBalancerPtr>
-OriginalDstClusterFactory::createClusterImpl(
-    Server::Configuration::ServerFactoryContext& server_context,
-    const envoy::config::cluster::v3::Cluster& cluster, ClusterFactoryContext& context,
-    Server::Configuration::TransportSocketFactoryContextImpl& socket_factory_context,
-    Stats::ScopeSharedPtr&& stats_scope) {
+OriginalDstClusterFactory::createClusterImpl(const envoy::config::cluster::v3::Cluster& cluster,
+                                             ClusterFactoryContext& context) {
   if (cluster.lb_policy() != envoy::config::cluster::v3::Cluster::CLUSTER_PROVIDED) {
     throw EnvoyException(
         fmt::format("cluster: LB policy {} is not valid for Cluster type {}. Only "
@@ -286,9 +333,7 @@ OriginalDstClusterFactory::createClusterImpl(
   // TODO(mattklein123): The original DST load balancer type should be deprecated and instead
   //                     the cluster should directly supply the load balancer. This will remove
   //                     a special case and allow this cluster to be compiled out as an extension.
-  auto new_cluster = std::make_shared<OriginalDstCluster>(
-      server_context, cluster, context.runtime(), socket_factory_context, std::move(stats_scope),
-      context.addedViaApi());
+  auto new_cluster = std::make_shared<OriginalDstCluster>(cluster, context);
   auto lb = std::make_unique<OriginalDstCluster::ThreadAwareLoadBalancer>(new_cluster);
   return std::make_pair(new_cluster, std::move(lb));
 }

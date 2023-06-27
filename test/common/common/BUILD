@@ -212,6 +212,8 @@ envoy_cc_test(
     srcs = ["logger_test.cc"],
     deps = [
         "//source/common/common:minimal_logger_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/network:network_mocks",
     ],
 )
 
@@ -481,5 +483,14 @@ envoy_cc_test(
     srcs = ["union_string_test.cc"],
     deps = [
         "//envoy/common:union_string",
+    ],
+)
+
+envoy_cc_test(
+    name = "bit_array_test",
+    srcs = ["bit_array_test.cc"],
+    deps = [
+        "//source/common/common:bit_array_lib",
+        "//source/common/common:random_generator_lib",
     ],
 )

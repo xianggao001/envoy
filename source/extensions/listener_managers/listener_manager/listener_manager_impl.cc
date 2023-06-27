@@ -377,8 +377,9 @@ ListenerManagerStats ListenerManagerImpl::generateStats(Stats::Scope& scope) {
   return {ALL_LISTENER_MANAGER_STATS(POOL_COUNTER(scope), POOL_GAUGE(scope))};
 }
 
-bool ListenerManagerImpl::addOrUpdateListener(const envoy::config::listener::v3::Listener& config,
-                                              const std::string& version_info, bool added_via_api) {
+absl::StatusOr<bool>
+ListenerManagerImpl::addOrUpdateListener(const envoy::config::listener::v3::Listener& config,
+                                         const std::string& version_info, bool added_via_api) {
   std::string name;
   if (!config.name().empty()) {
     name = config.name();
@@ -393,13 +394,11 @@ bool ListenerManagerImpl::addOrUpdateListener(const envoy::config::listener::v3:
   // future allow multiple ApiListeners, and allow them to be created via LDS as well as bootstrap.
   if (config.has_api_listener()) {
     if (config.has_internal_listener()) {
-      throw EnvoyException(fmt::format(
+      return absl::InvalidArgumentError(fmt::format(
           "error adding listener named '{}': api_listener and internal_listener cannot be both set",
           name));
     }
     if (!api_listener_ && !added_via_api) {
-      // TODO(junr03): dispatch to different concrete constructors when there are other
-      // ApiListenerImplBase derived classes.
       api_listener_ = std::make_unique<HttpApiListener>(config, server_, config.name());
       return true;
     } else {
@@ -407,6 +406,12 @@ bool ListenerManagerImpl::addOrUpdateListener(const envoy::config::listener::v3:
                       "allowed, and it can only be added via bootstrap configuration");
       return false;
     }
+  }
+
+  // Address field is not required for internal listeners.
+  if (!config.has_internal_listener() && !config.has_address()) {
+    return absl::InvalidArgumentError(
+        fmt::format("error adding listener named '{}': address is necessary", name));
   }
 
   auto it = error_state_tracker_.find(name);
@@ -422,7 +427,7 @@ bool ListenerManagerImpl::addOrUpdateListener(const envoy::config::listener::v3:
                                           *(it->second->mutable_last_update_attempt()));
     it->second->set_details(e.what());
     it->second->mutable_failed_configuration()->PackFrom(config);
-    throw e;
+    return absl::InvalidArgumentError(e.what());
   }
   error_state_tracker_.erase(it);
   return false;
@@ -855,7 +860,7 @@ void ListenerManagerImpl::startWorkers(GuardDog& guard_dog, std::function<void()
   uint32_t i = 0;
 
   absl::BlockingCounter workers_waiting_to_run(workers_.size());
-  Event::PostCb worker_started_running = [&workers_waiting_to_run]() {
+  std::function<void()> worker_started_running = [&workers_waiting_to_run]() {
     workers_waiting_to_run.DecrementCount();
   };
 

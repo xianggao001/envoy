@@ -16,6 +16,7 @@
 #include "envoy/config/typed_metadata.h"
 #include "envoy/http/codec.h"
 #include "envoy/http/filter_factory.h"
+#include "envoy/http/header_validator.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/transport_socket.h"
 #include "envoy/ssl/context.h"
@@ -174,6 +175,18 @@ public:
    */
   virtual void healthFlagSet(HealthFlag flag) PURE;
 
+  /**
+   * Atomically get multiple health flags that are set for a host. Flags are specified
+   * as a bitset of HealthFlags.
+   */
+  virtual uint32_t healthFlagsGetAll() const PURE;
+
+  /**
+   * Atomically set the health flag for a host. Flags are specified as a bitset
+   * of HealthFlags.
+   */
+  virtual void healthFlagsSetAll(uint32_t bits) PURE;
+
   enum class Health {
     /**
      * Host is unhealthy and is not able to serve traffic. A host may be marked as unhealthy either
@@ -223,7 +236,7 @@ public:
 
   /**
    * Set the timestamp of when the host has transitioned from unhealthy to healthy state via an
-   * active healchecking.
+   * active health checking.
    */
   virtual void setLastHcPassTime(MonotonicTime last_hc_pass_time) PURE;
 
@@ -451,6 +464,11 @@ public:
    * @return uint32_t the overprovisioning factor of this host set.
    */
   virtual uint32_t overprovisioningFactor() const PURE;
+
+  /**
+   * @return true to use host weights to calculate the health of a priority.
+   */
+  virtual bool weightedPriorityHealth() const PURE;
 };
 
 using HostSetPtr = std::unique_ptr<HostSet>;
@@ -525,13 +543,15 @@ public:
    * @param locality_weights supplies a map from locality to associated weight.
    * @param hosts_added supplies the hosts added since the last update.
    * @param hosts_removed supplies the hosts removed since the last update.
-   * @param overprovisioning_factor if presents, overwrites the current overprovisioning_factor.
+   * @param weighted_priority_health if present, overwrites the current weighted_priority_health.
+   * @param overprovisioning_factor if present, overwrites the current overprovisioning_factor.
    * @param cross_priority_host_map read only cross-priority host map which is created in the main
    * thread and shared by all the worker threads.
    */
   virtual void updateHosts(uint32_t priority, UpdateHostsParams&& update_hosts_params,
                            LocalityWeightsConstSharedPtr locality_weights,
                            const HostVector& hosts_added, const HostVector& hosts_removed,
+                           absl::optional<bool> weighted_priority_health,
                            absl::optional<uint32_t> overprovisioning_factor,
                            HostMapConstSharedPtr cross_priority_host_map = nullptr) PURE;
 
@@ -549,11 +569,13 @@ public:
      * @param locality_weights supplies a map from locality to associated weight.
      * @param hosts_added supplies the hosts added since the last update.
      * @param hosts_removed supplies the hosts removed since the last update.
-     * @param overprovisioning_factor if presents, overwrites the current overprovisioning_factor.
+     * @param weighted_priority_health if present, overwrites the current weighted_priority_health.
+     * @param overprovisioning_factor if present, overwrites the current overprovisioning_factor.
      */
     virtual void updateHosts(uint32_t priority, UpdateHostsParams&& update_hosts_params,
                              LocalityWeightsConstSharedPtr locality_weights,
                              const HostVector& hosts_added, const HostVector& hosts_removed,
+                             absl::optional<bool> weighted_priority_health,
                              absl::optional<uint32_t> overprovisioning_factor) PURE;
   };
 
@@ -595,7 +617,8 @@ public:
   COUNTER(update_failure)                                                                          \
   COUNTER(update_no_rebuild)                                                                       \
   COUNTER(update_success)                                                                          \
-  GAUGE(version, NeverImport)
+  GAUGE(version, NeverImport)                                                                      \
+  GAUGE(warming_state, NeverImport)
 
 /**
  * All cluster endpoints related stats.
@@ -609,7 +632,7 @@ public:
   GAUGE(membership_total, NeverImport)
 
 /**
- * All cluster loadbalancing related stats.
+ * All cluster load balancing related stats.
  */
 #define ALL_CLUSTER_LB_STATS(COUNTER, GAUGE, HISTOGRAM, TEXT_READOUT, STATNAME)                    \
   COUNTER(lb_healthy_panic)                                                                        \
@@ -822,6 +845,7 @@ using ProtocolOptionsConfigConstSharedPtr = std::shared_ptr<const ProtocolOption
  */
 class ClusterTypedMetadataFactory : public Envoy::Config::TypedMetadataFactory {};
 
+class LoadBalancerConfig;
 class TypedLoadBalancerFactory;
 
 /**
@@ -853,7 +877,7 @@ public:
     static constexpr uint64_t HTTP3 = 0x10;
   };
 
-  virtual ~ClusterInfo() = default;
+  ~ClusterInfo() override = default;
 
   /**
    * @return bool whether the cluster was added via API (if false the cluster was present in the
@@ -938,10 +962,10 @@ public:
   }
 
   /**
-   * @return const ProtobufWkt::Message& the validated load balancing policy configuration to use
-   * for this cluster.
+   * @return OptRef<const LoadBalancerConfig> the validated load balancing policy configuration to
+   * use for this cluster.
    */
-  virtual const ProtobufTypes::MessagePtr& loadBalancingPolicy() const PURE;
+  virtual OptRef<const LoadBalancerConfig> loadBalancerConfig() const PURE;
 
   /**
    * @return the load balancer factory for this cluster if the load balancing type is
@@ -1143,9 +1167,10 @@ public:
   virtual bool setLocalInterfaceNameOnUpstreamConnections() const PURE;
 
   /**
-   * @return eds cluster service_name of the cluster.
+   * @return const std::string& eds cluster service_name of the cluster. Empty if not an EDS
+   * cluster or eds cluster service_name is not set.
    */
-  virtual absl::optional<std::string> edsServiceName() const PURE;
+  virtual const std::string& edsServiceName() const PURE;
 
   /**
    * Create network filters on a new upstream connection.
@@ -1184,6 +1209,12 @@ public:
    * @return the Http3 Codec Stats.
    */
   virtual Http::Http3::CodecStats& http3CodecStats() const PURE;
+
+  /**
+   * @return create header validator based on cluster configuration. Returns nullptr if
+   * ENVOY_ENABLE_UHV is undefined.
+   */
+  virtual Http::ClientHeaderValidatorPtr makeHeaderValidator(Http::Protocol protocol) const PURE;
 
 protected:
   /**

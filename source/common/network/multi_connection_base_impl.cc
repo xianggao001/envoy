@@ -102,7 +102,9 @@ void MultiConnectionBaseImpl::enableHalfClose(bool enabled) {
   }
 }
 
-bool MultiConnectionBaseImpl::isHalfCloseEnabled() { return connections_[0]->isHalfCloseEnabled(); }
+bool MultiConnectionBaseImpl::isHalfCloseEnabled() const {
+  return connections_[0]->isHalfCloseEnabled();
+}
 
 std::string MultiConnectionBaseImpl::nextProtocol() const {
   return connections_[0]->nextProtocol();
@@ -344,7 +346,7 @@ void MultiConnectionBaseImpl::close(ConnectionCloseType type, absl::string_view 
   connections_[0]->close(type, details);
 }
 
-Event::Dispatcher& MultiConnectionBaseImpl::dispatcher() {
+Event::Dispatcher& MultiConnectionBaseImpl::dispatcher() const {
   ASSERT(&dispatcher_ == &connections_[0]->dispatcher());
   return connections_[0]->dispatcher();
 }

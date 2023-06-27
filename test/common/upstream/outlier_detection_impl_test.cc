@@ -1678,7 +1678,9 @@ TEST_F(OutlierDetectorImplTest, CrossThreadRemoveRace) {
   loadRq(hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
-  EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
+  EXPECT_CALL(dispatcher_, post(_)).WillOnce([&post_cb](Event::PostCb cb) {
+    post_cb = std::move(cb);
+  });
   loadRq(hosts_[0], 1, 500);
 
   // Remove before the cross thread event comes in.
@@ -1701,7 +1703,9 @@ TEST_F(OutlierDetectorImplTest, CrossThreadDestroyRace) {
   loadRq(hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
-  EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
+  EXPECT_CALL(dispatcher_, post(_)).WillOnce([&post_cb](Event::PostCb cb) {
+    post_cb = std::move(cb);
+  });
   loadRq(hosts_[0], 1, 500);
 
   // Destroy before the cross thread event comes in.
@@ -1725,7 +1729,9 @@ TEST_F(OutlierDetectorImplTest, CrossThreadFailRace) {
   loadRq(hosts_[0], 4, 500);
 
   Event::PostCb post_cb;
-  EXPECT_CALL(dispatcher_, post(_)).WillOnce(SaveArg<0>(&post_cb));
+  EXPECT_CALL(dispatcher_, post(_)).WillOnce([&post_cb](Event::PostCb cb) {
+    post_cb = std::move(cb);
+  });
   loadRq(hosts_[0], 1, 500);
 
   time_system_.setMonotonicTime(std::chrono::milliseconds(0));
@@ -1741,6 +1747,41 @@ TEST_F(OutlierDetectorImplTest, CrossThreadFailRace) {
   EXPECT_EQ(1UL, outlier_detection_ejections_active_.value());
 }
 
+TEST_F(OutlierDetectorImplTest, MaxEjectionPercentage) {
+  // A 50% ejection limit should not eject more than 1 out of 3 pods.
+  const std::string yaml = R"EOF(
+max_ejection_percent: 50
+max_ejection_time_jitter: 13s
+  )EOF";
+  envoy::config::cluster::v3::OutlierDetection outlier_detection_;
+  TestUtility::loadFromYaml(yaml, outlier_detection_);
+  EXPECT_CALL(cluster_.prioritySet(), addMemberUpdateCb(_));
+
+  // add 3 hosts.
+  addHosts({"tcp://127.0.0.2:80"});
+  addHosts({"tcp://127.0.0.3:80"});
+  addHosts({"tcp://127.0.0.4:80"});
+
+  EXPECT_CALL(*interval_timer_, enableTimer(std::chrono::milliseconds(10000), _));
+  std::shared_ptr<DetectorImpl> detector(DetectorImpl::create(
+      cluster_, outlier_detection_, dispatcher_, runtime_, time_system_, event_logger_, random_));
+
+  detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
+
+  time_system_.setMonotonicTime(std::chrono::milliseconds(0));
+  // Expect only one ejection.
+  EXPECT_CALL(checker_, check(hosts_[0]));
+  EXPECT_CALL(*event_logger_, logEject(std::static_pointer_cast<const HostDescription>(hosts_[0]),
+                                       _, envoy::data::cluster::v3::CONSECUTIVE_5XX, true));
+
+  loadRq(hosts_[0], 5, 500);
+  loadRq(hosts_[1], 5, 500);
+  loadRq(hosts_[2], 5, 500);
+  EXPECT_TRUE(hosts_[0]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+  EXPECT_FALSE(hosts_[1]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+  EXPECT_FALSE(hosts_[2]->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
+}
+
 TEST_F(OutlierDetectorImplTest, Consecutive_5xxAlreadyEjected) {
   EXPECT_CALL(cluster_.prioritySet(), addMemberUpdateCb(_));
   addHosts({"tcp://127.0.0.1:80"});
@@ -1749,7 +1790,6 @@ TEST_F(OutlierDetectorImplTest, Consecutive_5xxAlreadyEjected) {
                                                               dispatcher_, runtime_, time_system_,
                                                               event_logger_, random_));
   detector->addChangedStateCb([&](HostSharedPtr host) -> void { checker_.check(host); });
-
   // Cause a consecutive 5xx error.
   loadRq(hosts_[0], 4, 500);
 
@@ -2350,7 +2390,7 @@ TEST(OutlierUtility, SRThreshold) {
   DetectorImpl::EjectionPair success_rate_nums =
       DetectorImpl::successRateEjectionThreshold(sum, data, 1.9);
   EXPECT_EQ(90.0, success_rate_nums.success_rate_average_); // average success rate
-  EXPECT_EQ(52.0, success_rate_nums.ejection_threshold_);   // ejection threshold
+  EXPECT_EQ(52.0, success_rate_nums.ejection_threshold_);   //  ejection threshold
 }
 
 } // namespace

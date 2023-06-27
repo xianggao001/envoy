@@ -12,6 +12,7 @@
 
 #include "source/common/common/empty_string.h"
 #include "source/common/common/logger.h"
+#include "source/common/config/metadata.h"
 #include "source/common/upstream/cluster_factory_impl.h"
 #include "source/common/upstream/upstream_impl.h"
 
@@ -46,10 +47,10 @@ using HostMultiMapConstSharedPtr = std::shared_ptr<const HostMultiMap>;
  */
 class OriginalDstCluster : public ClusterImplBase {
 public:
-  OriginalDstCluster(Server::Configuration::ServerFactoryContext& server_context,
-                     const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
-                     Server::Configuration::TransportSocketFactoryContextImpl& factory_context,
-                     Stats::ScopeSharedPtr&& stats_scope, bool added_via_api);
+  OriginalDstCluster(const envoy::config::cluster::v3::Cluster& config,
+                     ClusterFactoryContext& context);
+
+  ~OriginalDstCluster() override { cleanup_timer_->disableTimer(); }
 
   // Upstream::Cluster
   InitializePhase initializePhase() const override { return InitializePhase::Primary; }
@@ -69,7 +70,8 @@ public:
   public:
     LoadBalancer(const std::shared_ptr<OriginalDstCluster>& parent)
         : parent_(parent), http_header_name_(parent->httpHeaderName()),
-          port_override_(parent->portOverride()), host_map_(parent->getCurrentHostMap()) {}
+          metadata_key_(parent->metadataKey()), port_override_(parent->portOverride()),
+          host_map_(parent->getCurrentHostMap()) {}
 
     // Upstream::LoadBalancer
     HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
@@ -89,16 +91,19 @@ public:
 
     Network::Address::InstanceConstSharedPtr filterStateOverrideHost(LoadBalancerContext* context);
     Network::Address::InstanceConstSharedPtr requestOverrideHost(LoadBalancerContext* context);
+    Network::Address::InstanceConstSharedPtr metadataOverrideHost(LoadBalancerContext* context);
 
   private:
     const std::shared_ptr<OriginalDstCluster> parent_;
     // The optional original host provider that extracts the address from HTTP header map.
     const absl::optional<Http::LowerCaseString>& http_header_name_;
+    const absl::optional<Config::MetadataKey>& metadata_key_;
     const absl::optional<uint32_t> port_override_;
     HostMultiMapConstSharedPtr host_map_;
   };
 
   const absl::optional<Http::LowerCaseString>& httpHeaderName() { return http_header_name_; }
+  const absl::optional<Config::MetadataKey>& metadataKey() { return metadata_key_; }
   const absl::optional<uint32_t> portOverride() { return port_override_; }
 
 private:
@@ -106,8 +111,9 @@ private:
     LoadBalancerFactory(const std::shared_ptr<OriginalDstCluster>& cluster) : cluster_(cluster) {}
 
     // Upstream::LoadBalancerFactory
-    Upstream::LoadBalancerPtr create() override { return std::make_unique<LoadBalancer>(cluster_); }
-    Upstream::LoadBalancerPtr create(Upstream::LoadBalancerParams) override { return create(); }
+    Upstream::LoadBalancerPtr create(Upstream::LoadBalancerParams) override {
+      return std::make_unique<LoadBalancer>(cluster_);
+    }
 
     const std::shared_ptr<OriginalDstCluster> cluster_;
   };
@@ -148,6 +154,7 @@ private:
   absl::Mutex host_map_lock_;
   HostMultiMapConstSharedPtr host_map_ ABSL_GUARDED_BY(host_map_lock_);
   absl::optional<Http::LowerCaseString> http_header_name_;
+  absl::optional<Config::MetadataKey> metadata_key_;
   absl::optional<uint32_t> port_override_;
   friend class OriginalDstClusterFactory;
 };
@@ -159,11 +166,9 @@ public:
   OriginalDstClusterFactory() : ClusterFactoryImplBase("envoy.cluster.original_dst") {}
 
 private:
-  std::pair<ClusterImplBaseSharedPtr, ThreadAwareLoadBalancerPtr> createClusterImpl(
-      Server::Configuration::ServerFactoryContext& server_context,
-      const envoy::config::cluster::v3::Cluster& cluster, ClusterFactoryContext& context,
-      Server::Configuration::TransportSocketFactoryContextImpl& socket_factory_context,
-      Stats::ScopeSharedPtr&& stats_scope) override;
+  std::pair<ClusterImplBaseSharedPtr, ThreadAwareLoadBalancerPtr>
+  createClusterImpl(const envoy::config::cluster::v3::Cluster& cluster,
+                    ClusterFactoryContext& context) override;
 };
 
 } // namespace Upstream

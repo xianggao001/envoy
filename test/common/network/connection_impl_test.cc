@@ -137,12 +137,12 @@ public:
   Buffer::Instance& readBuffer() { return *read_buffer_; }
 };
 
-class ConnectionImplTest : public testing::TestWithParam<Address::IpVersion> {
+class ConnectionImplTestBase {
 protected:
-  ConnectionImplTest()
+  ConnectionImplTestBase()
       : api_(Api::createApiForTest(time_system_)), stream_info_(time_system_, nullptr) {}
 
-  ~ConnectionImplTest() override {
+  virtual ~ConnectionImplTestBase() {
     EXPECT_TRUE(timer_destroyed_ || timer_ == nullptr);
     if (!timer_destroyed_) {
       delete timer_;
@@ -153,13 +153,14 @@ protected:
     return Network::Test::createRawBufferSocket();
   }
 
-  void setUpBasicConnection() {
+  void setUpBasicConnectionWithAddress(const Address::InstanceConstSharedPtr& address) {
     if (dispatcher_ == nullptr) {
       dispatcher_ = api_->allocateDispatcher("test_thread");
     }
-    socket_ = std::make_shared<Network::Test::TcpListenSocketImmediateListen>(
-        Network::Test::getCanonicalLoopbackAddress(GetParam()));
-    listener_ = dispatcher_->createListener(socket_, listener_callbacks_, runtime_, true, false);
+    socket_ = std::make_shared<Network::Test::TcpListenSocketImmediateListen>(address);
+    NiceMock<Network::MockListenerConfig> listener_config;
+    listener_ =
+        dispatcher_->createListener(socket_, listener_callbacks_, runtime_, listener_config);
     client_connection_ = std::make_unique<Network::TestClientConnectionImpl>(
         *dispatcher_, socket_->connectionInfoProvider().localAddress(), source_address_,
         createTransportSocket(), socket_options_, transport_socket_options_);
@@ -186,6 +187,7 @@ protected:
             dispatcher_->exit();
           }
         }));
+    EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
     EXPECT_CALL(client_callbacks_, onEvent(ConnectionEvent::Connected))
         .WillOnce(Invoke([&](Network::ConnectionEvent) -> void {
           expected_callbacks--;
@@ -297,6 +299,14 @@ protected:
   Network::TransportSocketOptionsConstSharedPtr transport_socket_options_ = nullptr;
 };
 
+class ConnectionImplTest : public ConnectionImplTestBase,
+                           public testing::TestWithParam<Address::IpVersion> {
+protected:
+  void setUpBasicConnection() {
+    setUpBasicConnectionWithAddress(Network::Test::getCanonicalLoopbackAddress(GetParam()));
+  }
+};
+
 INSTANTIATE_TEST_SUITE_P(IpVersions, ConnectionImplTest,
                          testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
                          TestUtility::ipTestParamsToString);
@@ -375,6 +385,7 @@ TEST_P(ConnectionImplTest, CloseDuringConnectCallback) {
         server_connection_->addReadFilter(add_and_remove_filter);
         server_connection_->removeReadFilter(add_and_remove_filter);
       }));
+  EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
 
   EXPECT_CALL(server_callbacks_, onEvent(ConnectionEvent::RemoteClose))
       .WillOnce(Invoke([&](Network::ConnectionEvent) -> void { dispatcher_->exit(); }));
@@ -405,6 +416,7 @@ TEST_P(ConnectionImplTest, UnregisterRegisterDuringConnectCallback) {
           dispatcher_->exit();
         }
       }));
+  EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
   EXPECT_CALL(client_callbacks_, onEvent(ConnectionEvent::Connected))
       .WillOnce(Invoke([&](Network::ConnectionEvent) -> void {
         expected_callbacks--;
@@ -563,6 +575,7 @@ TEST_P(ConnectionImplTest, SocketOptions) {
             socket_->connectionInfoProvider().localAddress(), source_address_,
             Network::Test::createRawBufferSocket(), server_connection_->socketOptions(), nullptr);
       }));
+  EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
 
   EXPECT_CALL(server_callbacks_, onEvent(ConnectionEvent::RemoteClose))
       .WillOnce(Invoke([&](Network::ConnectionEvent) -> void {
@@ -613,6 +626,7 @@ TEST_P(ConnectionImplTest, SocketOptionsFailureTest) {
             Network::Test::createRawBufferSocket(), server_connection_->socketOptions(), nullptr);
         upstream_connection_->addConnectionCallbacks(upstream_callbacks_);
       }));
+  EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
 
   EXPECT_CALL(upstream_callbacks_, onEvent(ConnectionEvent::LocalClose));
 
@@ -708,6 +722,7 @@ TEST_P(ConnectionImplTest, ConnectionStats) {
         server_connection_->addReadFilter(read_filter_);
         EXPECT_EQ("", server_connection_->nextProtocol());
       }));
+  EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
 
   Sequence s2;
   EXPECT_CALL(server_connection_stats.rx_total_, add(4)).InSequence(s2);
@@ -1248,13 +1263,19 @@ TEST_P(ConnectionImplTest, WriteWithWatermarks) {
         return {-1, SOCKET_ERROR_AGAIN};
       }));
 
-  EXPECT_CALL(os_sys_calls, writev(_, _, _))
-      .WillOnce(Invoke([&](os_fd_t, const iovec*, int) -> Api::SysCallSizeResult {
+  EXPECT_CALL(os_sys_calls, recv(_, _, _, _))
+      .WillRepeatedly(Invoke([&](os_fd_t, void*, size_t, int) -> Api::SysCallSizeResult {
+        return {-1, SOCKET_ERROR_AGAIN};
+      }));
+
+  EXPECT_CALL(os_sys_calls, send(_, _, _, _))
+      .WillOnce(Invoke([&](os_fd_t, void*, size_t, int) -> Api::SysCallSizeResult {
         dispatcher_->exit();
         // Return to default os_sys_calls implementation
         os_calls.reset();
         return {-1, SOCKET_ERROR_AGAIN};
       }));
+
   // The write() call on the connection will buffer enough data to bring the connection above the
   // high watermark and as the data will not flush it should not return below the watermark.
   EXPECT_CALL(client_callbacks_, onAboveWriteBufferHighWatermark());
@@ -1335,13 +1356,13 @@ TEST_P(ConnectionImplTest, WatermarkFuzzing) {
     // drain |bytes_to_flush| before having writev syscall fail with EAGAIN
     EXPECT_CALL(*client_write_buffer_, move(_))
         .WillOnce(Invoke(client_write_buffer_, &MockWatermarkBuffer::baseMove));
-    EXPECT_CALL(os_sys_calls, writev(_, _, _))
-        .WillOnce(Invoke([&](os_fd_t, const iovec*, int) -> Api::SysCallSizeResult {
+    EXPECT_CALL(os_sys_calls, send(_, _, _, _))
+        .WillOnce(Invoke([&](os_fd_t, void*, size_t, int) -> Api::SysCallSizeResult {
           client_write_buffer_->drain(bytes_to_flush);
           dispatcher_->exit();
           return {-1, SOCKET_ERROR_AGAIN};
         }))
-        .WillRepeatedly(Invoke([&](os_fd_t, const iovec*, int) -> Api::SysCallSizeResult {
+        .WillRepeatedly(Invoke([&](os_fd_t, void*, size_t, int) -> Api::SysCallSizeResult {
           return {-1, SOCKET_ERROR_AGAIN};
         }));
 
@@ -1413,7 +1434,8 @@ TEST_P(ConnectionImplTest, BindFailureTest) {
   dispatcher_ = api_->allocateDispatcher("test_thread");
   socket_ = std::make_shared<Network::Test::TcpListenSocketImmediateListen>(
       Network::Test::getCanonicalLoopbackAddress(GetParam()));
-  listener_ = dispatcher_->createListener(socket_, listener_callbacks_, runtime_, true, false);
+  NiceMock<Network::MockListenerConfig> listener_config;
+  listener_ = dispatcher_->createListener(socket_, listener_callbacks_, runtime_, listener_config);
 
   client_connection_ = dispatcher_->createClientConnection(
       socket_->connectionInfoProvider().localAddress(), source_address_,
@@ -2083,7 +2105,7 @@ public:
 
   // This may be invoked for doWrite() on the transport to simulate all the data
   // being written.
-  static IoResult SimulateSuccessfulWrite(Buffer::Instance& buffer, bool) {
+  static IoResult simulateSuccessfulWrite(Buffer::Instance& buffer, bool) {
     uint64_t size = buffer.length();
     buffer.drain(size);
     return {PostIoAction::KeepOpen, size, false};
@@ -2487,7 +2509,7 @@ TEST_F(MockTransportConnectionImplTest, FullCloseWrite) {
   Buffer::OwnedImpl buffer(val);
   EXPECT_CALL(*file_event_, activate(Event::FileReadyType::Write)).WillOnce(Invoke(file_ready_cb_));
   EXPECT_CALL(*transport_socket_, doWrite(BufferStringEqual(val), false))
-      .WillOnce(Invoke(SimulateSuccessfulWrite));
+      .WillOnce(Invoke(simulateSuccessfulWrite));
   connection_->write(buffer, false);
 }
 
@@ -2500,10 +2522,10 @@ TEST_F(MockTransportConnectionImplTest, HalfCloseWrite) {
   const std::string val("some data");
   Buffer::OwnedImpl buffer(val);
   EXPECT_CALL(*transport_socket_, doWrite(BufferStringEqual(val), false))
-      .WillOnce(Invoke(SimulateSuccessfulWrite));
+      .WillOnce(Invoke(simulateSuccessfulWrite));
   connection_->write(buffer, false);
 
-  EXPECT_CALL(*transport_socket_, doWrite(_, true)).WillOnce(Invoke(SimulateSuccessfulWrite));
+  EXPECT_CALL(*transport_socket_, doWrite(_, true)).WillOnce(Invoke(simulateSuccessfulWrite));
   connection_->write(buffer, true);
 }
 
@@ -2576,7 +2598,7 @@ TEST_F(MockTransportConnectionImplTest, BothHalfCloseWritesNotFlushedWriteFirst)
   file_ready_cb_(Event::FileReadyType::Read);
 
   EXPECT_CALL(callbacks_, onEvent(ConnectionEvent::LocalClose));
-  EXPECT_CALL(*transport_socket_, doWrite(_, true)).WillOnce(Invoke(SimulateSuccessfulWrite));
+  EXPECT_CALL(*transport_socket_, doWrite(_, true)).WillOnce(Invoke(simulateSuccessfulWrite));
   file_ready_cb_(Event::FileReadyType::Write);
 }
 
@@ -2900,7 +2922,9 @@ public:
     dispatcher_ = api_->allocateDispatcher("test_thread");
     socket_ = std::make_shared<Network::Test::TcpListenSocketImmediateListen>(
         Network::Test::getCanonicalLoopbackAddress(GetParam()));
-    listener_ = dispatcher_->createListener(socket_, listener_callbacks_, runtime_, true, false);
+    NiceMock<Network::MockListenerConfig> listener_config;
+    listener_ =
+        dispatcher_->createListener(socket_, listener_callbacks_, runtime_, listener_config);
 
     client_connection_ = dispatcher_->createClientConnection(
         socket_->connectionInfoProvider().localAddress(),
@@ -2919,6 +2943,7 @@ public:
           EXPECT_EQ("", server_connection_->nextProtocol());
           EXPECT_EQ(read_buffer_limit, server_connection_->bufferLimit());
         }));
+    EXPECT_CALL(listener_callbacks_, recordConnectionsAcceptedOnSocketEvent(_));
 
     uint32_t filter_seen = 0;
 
@@ -3086,8 +3111,23 @@ TEST_F(InternalClientConnectionImplTest,
       "");
 }
 
-class ClientConnectionWithCustomRawBufferSocketTest : public ConnectionImplTest {
+class ClientConnectionWithCustomRawBufferSocketTest : public ConnectionImplTestBase,
+                                                      public testing::TestWithParam<Address::Type> {
 protected:
+  void setUpBasicConnection() {
+    Address::InstanceConstSharedPtr address;
+    switch (GetParam()) {
+    case Address::Type::Pipe:
+      address = Utility::resolveUrl("unix://" + path_);
+      break;
+    case Address::Type::Ip:
+    default:
+      address = Network::Test::getCanonicalLoopbackAddress(Address::IpVersion::v4);
+      break;
+    }
+    setUpBasicConnectionWithAddress(address);
+  }
+
   class TestRawBufferSocket : public RawBufferSocket {
   public:
     bool compareCallbacks(TransportSocketCallbacks* callback) const {
@@ -3103,11 +3143,13 @@ protected:
     Network::TestClientConnectionImpl* client_conn_impl = testClientConnection();
     return dynamic_cast<TestRawBufferSocket*>(client_conn_impl->transportSocket().get());
   }
+
+private:
+  const std::string path_{TestEnvironment::unixDomainSocketPath("foo")};
 };
 
 INSTANTIATE_TEST_SUITE_P(IpVersions, ClientConnectionWithCustomRawBufferSocketTest,
-                         testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
-                         TestUtility::ipTestParamsToString);
+                         testing::ValuesIn({Address::Type::Ip, Address::Type::Pipe}));
 
 class TestObject : public StreamInfo::FilterState::Object {};
 
@@ -3117,7 +3159,7 @@ TEST_P(ClientConnectionWithCustomRawBufferSocketTest, TransportSocketCallbacks) 
   filter_state.setData("test-filter-state", filter_state_object,
                        StreamInfo::FilterState::StateType::ReadOnly,
                        StreamInfo::FilterState::LifeSpan::Connection,
-                       StreamInfo::FilterState::StreamSharing::SharedWithUpstreamConnection);
+                       StreamInfo::StreamSharingMayImpactPooling::SharedWithUpstreamConnection);
   transport_socket_options_ = TransportSocketOptionsUtility::fromFilterState(filter_state);
   setUpBasicConnection();
 

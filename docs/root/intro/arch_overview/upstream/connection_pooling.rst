@@ -86,13 +86,20 @@ production burn time, but is considered ready for use.
 Happy Eyeballs Support
 ----------------------
 
-Envoy supports Happy Eyeballs, `RFC6555 <https://tools.ietf.org/html/rfc6555>`_,
-for upstream TCP connections.  For clusters which use
+Envoy supports Happy Eyeballs, `RFC8305 <https://tools.ietf.org/html/rfc8305>`_,
+for upstream TCP connections. For clusters which use
 :ref:`LOGICAL_DNS<envoy_v3_api_enum_value_config.cluster.v3.Cluster.DiscoveryType.LOGICAL_DNS>`,
 this behavior is configured by setting the DNS IP address resolution policy in
 :ref:`config.cluster.v3.Cluster.DnsLookupFamily <envoy_v3_api_enum_config.cluster.v3.Cluster.DnsLookupFamily>`
 to the :ref:`ALL <envoy_v3_api_enum_value_config.cluster.v3.Cluster.DnsLookupFamily.ALL>` option to return
-both IPv4 and IPv6 addresses. The returned addresses will be sorted according the the Happy Eyeballs
+both IPv4 and IPv6 addresses. For clusters which use
+:ref:`EDS<envoy_v3_api_enum_value_config.cluster.v3.Cluster.DiscoveryType.EDS>`, this behavior is configured
+by specifying additional IP addresses for a host using the
+:ref:`additional_addresses <envoy_v3_api_field_config.endpoint.v3.Endpoint.additional_addresses>` field.
+The addresses specified in this field will be appended in a list to the one specified in
+:ref:`address <envoy_v3_api_field_config.endpoint.v3.Endpoint.address>`
+
+The list of all addresses will be sorted according the the Happy Eyeballs
 specification and a connection will be attempted to the first in the list. If this connection succeeds,
 it will be used. If it fails, an attempt will be made to the next on the list. If after 300ms the connection
 is still connecting, then a backup connection attempt will be made to the next address on the list.
@@ -114,6 +121,8 @@ connection pools are also allocated for each of the following features:
 * :ref:`Routing priority <arch_overview_http_routing_priority>`
 * :ref:`Socket options <envoy_v3_api_field_config.core.v3.BindConfig.socket_options>`
 * :ref:`Transport socket (e.g. TLS) options <envoy_v3_api_msg_config.core.v3.TransportSocket>`
+* Downstream :ref:`filter state objects <arch_overview_advanced_filter_state_sharing>` that are hashable
+  and marked as shared with the upstream connection.
 
 Each worker thread maintains its own connection pools for each cluster, so if an Envoy has two
 threads and a cluster with both HTTP/1 and HTTP/2 support, there will be at least 4 connection pools.
